@@ -110,10 +110,10 @@ if "patient" in st.session_state:
 
                 # Step 5: Form Distribution (email templates after confirmation)
                 st.subheader("5) Form Distribution")
-                intake = get_template_path("intake_form_template.html")
+                intake = get_template_path("New Patient Intake Form.pdf")
                 consent = get_template_path("consent_form_template.html")
                 with open(intake,"rb") as f1, open(consent,"rb") as f2:
-                    st.download_button("Download Intake Form", f1, file_name="intake_form.html")
+                    st.download_button("Download Patient Intake Form", f1, file_name="Patient_intake_form.html")
                     st.download_button("Download Consent Form", f2, file_name="consent_form.html")
                 send_message("EMAIL", email_to or "unknown@example.com", "Intake Forms",
                              "Please complete the attached intake and consent forms before your visit.", booking_id)
