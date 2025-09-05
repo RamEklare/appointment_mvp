@@ -15,7 +15,7 @@ def load_patients(path: str = PATIENT_CSV) -> pd.DataFrame:
     return pd.read_csv(path)
 
 def load_doctors_and_availability(path: str = DOCTOR_XLSX):
-    xls = pd.ExcelFile(path)
+    xls = pd.ExcelFile(path, engine='openpyxl')
     doctors = pd.read_excel(xls, "doctors")
     availability = pd.read_excel(xls, "availability")
     holidays = pd.read_excel(xls, "holidays")
