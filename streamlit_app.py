@@ -10,7 +10,7 @@ from appointment_core import (
 
 st.set_page_config(page_title="Clinic Scheduling MVP", page_icon="🗓️", layout="wide")
 
-st.title("🗓️ Medical Appointment Scheduling – MVP-1")
+st.title("🗓️ Medical Appointment Scheduling")
 
 with st.sidebar:
     st.header("Admin")
