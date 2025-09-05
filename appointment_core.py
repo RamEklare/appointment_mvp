@@ -1,8 +1,8 @@
-
 import os
 import uuid
 from datetime import datetime, timedelta, date, time
 import pandas as pd
+import shutil
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 PATIENT_CSV = os.path.join(DATA_DIR, "patients_sample_50.csv")
@@ -15,6 +15,7 @@ def load_patients(path: str = PATIENT_CSV) -> pd.DataFrame:
     return pd.read_csv(path)
 
 def load_doctors_and_availability(path: str = DOCTOR_XLSX):
+    # open the Excel file once and return three dataframes
     xls = pd.ExcelFile(path, engine='openpyxl')
     doctors = pd.read_excel(xls, "doctors")
     availability = pd.read_excel(xls, "availability")
@@ -25,7 +26,6 @@ def load_doctors_and_availability(path: str = DOCTOR_XLSX):
 
 def search_patient(patients_df: pd.DataFrame, name: str, dob: str):
     name = name.strip().lower()
-    # split first+last naive
     parts = name.split()
     matches = patients_df[
         (patients_df["dob"].astype(str) == dob) &
@@ -44,41 +44,39 @@ def visit_duration_mins(is_new: bool) -> int:
     return 60 if is_new else 30
 
 def get_available_slots(availability_df: pd.DataFrame, doctor_id: str, date_str: str, minutes: int):
-    # We generated 30-min slots. For 60-min needs, we require two consecutive free rows.
     day_slots = availability_df[
         (availability_df["doctor_id"] == doctor_id) &
         (availability_df["date"] == date_str) &
         (availability_df["booked"] == 0)
-    ].copy().sort_values(["date","slot_start"])
+    ].copy().sort_values(["date", "slot_start"])
     if minutes == 30:
-        return day_slots[["slot_start","slot_end","location"]].to_dict(orient="records")
+        return day_slots[["slot_start", "slot_end", "location"]].to_dict(orient="records")
     else:
-        # find consecutive pairs
         out = []
         prev = None
         for _, row in day_slots.iterrows():
             if prev is None:
                 prev = row
                 continue
-            # check adjacency
             if prev["slot_end"] == row["slot_start"]:
                 out.append({"slot_start": prev["slot_start"], "slot_end": row["slot_end"], "location": row["location"]})
             prev = row
         return out
 
-def book_appointment(patient: dict, doctor_row: dict, date_str: str, slot_start: str, slot_end: str, visit_type: str, insurance: dict, notes: str=""):
-    # Mark slots booked in availability
-    _, availability, _ = load_doctors_and_availability()
+def book_appointment(patient: dict, doctor_row: dict, date_str: str, slot_start: str,
+                     slot_end: str, visit_type: str, insurance: dict, notes: str = ""):
+    # load everything once
+    doctors, availability, holidays = load_doctors_and_availability()
+
     # For 60-min, block two 30-min slots; for 30-min, block one
     to_block = [(slot_start, slot_end)]
     if visit_type.lower() == "new":
-        # split into two 30-min slots to block if needed
         start_h, start_m = map(int, slot_start.split(":"))
         end_h, end_m = map(int, slot_end.split(":"))
-        total = (end_h*60 + end_m) - (start_h*60 + start_m)
+        total = (end_h * 60 + end_m) - (start_h * 60 + start_m)
         if total == 60:
-            mid_mins = start_h*60 + start_m + 30
-            mid = f"{mid_mins//60:02d}:{mid_mins%60:02d}"
+            mid_mins = start_h * 60 + start_m + 30
+            mid = f"{mid_mins // 60:02d}:{mid_mins % 60:02d}"
             to_block = [(slot_start, mid), (mid, slot_end)]
 
     for st, en in to_block:
@@ -93,21 +91,22 @@ def book_appointment(patient: dict, doctor_row: dict, date_str: str, slot_start:
             raise ValueError("Requested time is no longer available.")
         availability.loc[idx, "booked"] = 1
 
-    # Save availability back
-    xls_path = DOCTOR_XLSX
-    with pd.ExcelWriter(xls_path, engine="openpyxl") as writer:
-        # reload doctors to keep sheets intact
-        doctors, _, holidays = load_doctors_and_availability(xls_path)
+    # Back up the Excel file before overwriting
+    if os.path.exists(DOCTOR_XLSX):
+        shutil.copy(DOCTOR_XLSX, DOCTOR_XLSX + ".bak")
+
+    # Save all three sheets back once
+    with pd.ExcelWriter(DOCTOR_XLSX, engine="openpyxl") as writer:
         doctors.to_excel(writer, sheet_name="doctors", index=False)
         availability.to_excel(writer, sheet_name="availability", index=False)
         holidays.to_excel(writer, sheet_name="holidays", index=False)
 
-    # Append to bookings.xlsx
+    # Append booking to bookings.xlsx
     booking_id = str(uuid.uuid4())[:8]
     book_row = pd.DataFrame([{
         "booking_id": booking_id,
-        "patient_id": patient.get("patient_id","NEW"),
-        "patient_name": f'{patient.get("first_name","")} {patient.get("last_name","")}'.strip() or patient.get("name",""),
+        "patient_id": patient.get("patient_id", "NEW"),
+        "patient_name": f'{patient.get("first_name", "")} {patient.get("last_name", "")}'.strip() or patient.get("name", ""),
         "doctor_id": doctor_row["doctor_id"],
         "doctor_name": doctor_row["doctor_name"],
         "date": date_str,
@@ -115,19 +114,18 @@ def book_appointment(patient: dict, doctor_row: dict, date_str: str, slot_start:
         "slot_end": slot_end,
         "location": doctor_row["location"],
         "visit_type": visit_type.lower(),
-        "insurance_carrier": insurance.get("carrier",""),
-        "insurance_member_id": insurance.get("member_id",""),
-        "insurance_group": insurance.get("group",""),
+        "insurance_carrier": insurance.get("carrier", ""),
+        "insurance_member_id": insurance.get("member_id", ""),
+        "insurance_group": insurance.get("group", ""),
         "status": "CONFIRMED",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "notes": notes
     }])
 
     if os.path.exists(BOOKINGS_XLSX):
-        with pd.ExcelWriter(BOOKINGS_XLSX, mode="a", if_sheet_exists="overlay", engine="openpyxl") as writer:
-            # read existing, then concat to avoid header duplication
-            existing = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
-            all_rows = pd.concat([existing, book_row], ignore_index=True)
+        existing = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
+        all_rows = pd.concat([existing, book_row], ignore_index=True)
+        with pd.ExcelWriter(BOOKINGS_XLSX, engine="openpyxl") as writer:
             all_rows.to_excel(writer, index=False, sheet_name="bookings")
     else:
         with pd.ExcelWriter(BOOKINGS_XLSX, engine="openpyxl") as writer:
@@ -135,8 +133,7 @@ def book_appointment(patient: dict, doctor_row: dict, date_str: str, slot_start:
 
     return booking_id
 
-def send_message(channel: str, to: str, subject: str, message: str, booking_id: str=None):
-    # Simulate Email/SMS by logging
+def send_message(channel: str, to: str, subject: str, message: str, booking_id: str = None):
     row = pd.DataFrame([{
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "channel": channel,
@@ -153,9 +150,8 @@ def send_message(channel: str, to: str, subject: str, message: str, booking_id: 
         row.to_csv(COMM_LOG_CSV, index=False)
 
 def export_admin_report():
-    # Export summary to an Excel workbook for "admin review"
-    report_path = os.path.join(os.path.dirname(__file__), f"admin_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
-    # Read current
+    report_path = os.path.join(os.path.dirname(__file__),
+                               f"admin_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
     doctors, avail, holidays = load_doctors_and_availability()
     patients = load_patients()
     bookings = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings") if os.path.exists(BOOKINGS_XLSX) else pd.DataFrame()
